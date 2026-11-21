@@ -370,6 +370,39 @@ exit:
 }
 #endif /* CONFIG_RTW_MESH_AEK */
 
+/* The stock Mobis hostapd sends its Apple device IE as a Broadcom "add_ie" private command */
+static void niro_add_ie(struct net_device *net, const char *cmd)
+{
+	_adapter *adapter = (_adapter *)rtw_netdev_priv(net);
+	struct mlme_priv *mlme = &adapter->mlmepriv;
+	char oui[7], data[129], hex[136];
+	u8 ie[72];
+	int pkt, i, n = 2, hi, lo;
+
+	if (sscanf(cmd, "add_ie %d %6s %128s", &pkt, oui, data) != 3 || strlen(oui) != 6 || strlen(data) % 2 || strlen(data) > 128)
+		return;
+	snprintf(hex, sizeof(hex), "%s%s", oui, data);
+	for (i = 0; hex[i] && n < (int)sizeof(ie); i += 2) {
+		hi = hex_to_bin(hex[i]);
+		lo = hex_to_bin(hex[i + 1]);
+		if (hi < 0 || lo < 0)
+			return;
+		ie[n++] = (hi << 4) | lo;
+	}
+	ie[0] = WLAN_EID_VENDOR_SPECIFIC;
+	ie[1] = n - 2;
+	_rtw_memcpy(mlme->vendor_ie[0], ie, n);
+	mlme->vendor_ielen[0] = n;
+	if (pkt == 0)
+		mlme->vendor_ie_mask[0] |= WIFI_BEACON_VENDOR_IE_BIT;
+	else if (pkt == 1)
+		mlme->vendor_ie_mask[0] |= WIFI_PROBERESP_VENDOR_IE_BIT;
+	else if (pkt == 2)
+		mlme->vendor_ie_mask[0] |= WIFI_ASSOCRESP_VENDOR_IE_BIT;
+	RTW_INFO("add_ie: %d bytes, mask 0x%x\n", n, mlme->vendor_ie_mask[0]);
+	update_beacon(adapter, 0xFF, NULL, _TRUE, 0);
+}
+
 int rtw_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 {
 	#define PRIVATE_COMMAND_MAX_LEN		65536
@@ -449,6 +482,14 @@ int rtw_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
 	command[priv_cmd.total_len] = '\0';
 	RTW_INFO("%s: Android private cmd \"%s\" on %s\n"
 		 , __FUNCTION__, command, ifr->ifr_name);
+
+	//  Patch in Mobis niro_add_ie function at line 374
+	if (strncmp(command, "add_ie ", 7) == 0) {
+		niro_add_ie(net, command);
+		snprintf(command, 3, "OK");
+		bytes_written = 2;
+		goto response;
+	}
 
 	cmd_num = rtw_android_cmdstr_to_num(command);
 
@@ -1080,5 +1121,4 @@ static void wifi_del_dev(void)
 	platform_driver_unregister(&wifi_device_legacy);
 }
 #endif /* defined(RTW_ENABLE_WIFI_CONTROL_FUNC) */
-
 

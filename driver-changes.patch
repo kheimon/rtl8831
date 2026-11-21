@@ -1,0 +1,154 @@
+diff --git a/Makefile b/Makefile
+index 1907e44..ae5a2ff 100644
+--- a/Makefile
++++ b/Makefile
+@@ -795,10 +795,14 @@ endif
+ 
+ include $(src)/phl/phl.mk
+ 
++# Not sure why this is specified twice; typo for 8831/8851 support?
++# Overriding this to bcmdhd anyways.
++# obj-$(CONFIG_RTL8851BU) := $(MODULE_NAME).o
++obj-$(CONFIG_RTL8851BU) := bcmdhd.o
+ 
+-obj-$(CONFIG_RTL8851BU) := $(MODULE_NAME).o
+-obj-$(CONFIG_RTL8851BU) := $(MODULE_NAME).o
+-$(MODULE_NAME)-y = $(OBJS)
++# 88x1bu makefile loads config from common makefile and other sources, not like 8821au makefile
++#$(MODULE_NAME)-y = $(OBJS)
++bcmdhd-y = $(OBJS)
+ 
+ ############# MEMORY MANAGMENT #############
+ ifneq ($(CONFIG_RTKM), n)
+@@ -920,4 +924,4 @@ $(foreach flag,$(subst -I,,$(_INC_CFLAGS)),\
+  $(shell if test -d $(srctree)/$(flag); then echo -I$$(cd $(srctree)/$(flag) && pwd); else echo -I$(flag); fi)\
+ )
+ EXTRA_CFLAGS := $(_EXTRA_CFLAGS) $(_INC_CFLAGS)
+-endif
++endif
+\ No newline at end of file
+diff --git a/os_dep/linux/os_intfs.c b/os_dep/linux/os_intfs.c
+index 58911ea..6bf37ed 100755
+--- a/os_dep/linux/os_intfs.c
++++ b/os_dep/linux/os_intfs.c
+@@ -25,6 +25,23 @@ MODULE_VERSION(DRIVERVERSION);
+ int netdev_open(struct net_device *pnetdev);
+ static int netdev_close(struct net_device *pnetdev);
+ 
++/** Stock Mobis Wi-Fi HAL interface: it passes these to the module and reads the MAC from sysfs
++* 	Same as in 8821au patch .
++*/
++#define NIRO_PATHLEN 256
++static char iface_name[IFNAMSIZ];
++static char firmware_path[NIRO_PATHLEN];
++static char nvram_path[NIRO_PATHLEN];
++static char clm_path[NIRO_PATHLEN];
++static char mac_address_read[100];
++module_param_string(iface_name, iface_name, IFNAMSIZ, 0644);
++module_param_string(firmware_path, firmware_path, NIRO_PATHLEN, 0644);
++module_param_string(nvram_path, nvram_path, NIRO_PATHLEN, 0644);
++module_param_string(clm_path, clm_path, NIRO_PATHLEN, 0644);
++module_param_string(mac_address_read, mac_address_read, 100, 0644);
++
++/* Country code is not set; don't need the changes from the 8821au patch? */
++// char *rtw_country_code = "CA";
+ 
+ /**
+  * rtw_net_set_mac_address
+@@ -296,7 +313,13 @@ int rtw_ndev_init(struct net_device *dev)
+ 
+ 	RTW_PRINT(FUNC_ADPT_FMT" if%d mac_addr="MAC_FMT"\n"
+ 		, FUNC_ADPT_ARG(adapter), (adapter->iface_id + 1), MAC_ARG(dev->dev_addr));
+-	strncpy(adapter->old_ifname, dev->name, IFNAMSIZ);
++	/** change method from strncpy to strlcpy, same as in 8821au patch.
++	 * strncpy() does not guarantee null-termination if the source string is too long, 
++	 * which can lead to buffer overflows and undefined behavior. 
++	 * strlcpy() ensures that the destination buffer is always null-terminated, 
++	 * preventing potential security vulnerabilities and improving code safety.
++	 */
++	strlcpy(adapter->old_ifname, dev->name, IFNAMSIZ);
+ 	adapter->old_ifname[IFNAMSIZ - 1] = '\0';
+ #ifdef CONFIG_ARCH_CORTINA
+ 	dev->priv_flags = IFF_DOMAIN_WLAN;
+@@ -646,6 +669,10 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
+ 
+ 	dev_addr_mod(ndev, 0, adapter_mac_addr(adapter), ETH_ALEN);
+ 
++	/* get adapter MAC address if primary, same as in 8821au patch. */
++	if (is_primary_adapter(adapter))
++		snprintf(mac_address_read, sizeof(mac_address_read), "%pM", adapter_mac_addr(adapter));
++
+ 	/* Tell the network stack we exist */
+ 
+ 	if (rtnl_lock_needed)
+@@ -3643,4 +3670,4 @@ int rtw_vendor_ie_set_api(struct net_device *dev, char *extra)
+ }
+ EXPORT_SYMBOL(rtw_vendor_ie_set_api);
+ 
+-#endif
++#endif
+\ No newline at end of file
+diff --git a/os_dep/linux/rtw_android.c b/os_dep/linux/rtw_android.c
+index 9c12c16..cd4fa91 100755
+--- a/os_dep/linux/rtw_android.c
++++ b/os_dep/linux/rtw_android.c
+@@ -370,6 +370,39 @@ exit:
+ }
+ #endif /* CONFIG_RTW_MESH_AEK */
+ 
++/* The stock Mobis hostapd sends its Apple device IE as a Broadcom "add_ie" private command */
++static void niro_add_ie(struct net_device *net, const char *cmd)
++{
++	_adapter *adapter = (_adapter *)rtw_netdev_priv(net);
++	struct mlme_priv *mlme = &adapter->mlmepriv;
++	char oui[7], data[129], hex[136];
++	u8 ie[72];
++	int pkt, i, n = 2, hi, lo;
++
++	if (sscanf(cmd, "add_ie %d %6s %128s", &pkt, oui, data) != 3 || strlen(oui) != 6 || strlen(data) % 2 || strlen(data) > 128)
++		return;
++	snprintf(hex, sizeof(hex), "%s%s", oui, data);
++	for (i = 0; hex[i] && n < (int)sizeof(ie); i += 2) {
++		hi = hex_to_bin(hex[i]);
++		lo = hex_to_bin(hex[i + 1]);
++		if (hi < 0 || lo < 0)
++			return;
++		ie[n++] = (hi << 4) | lo;
++	}
++	ie[0] = WLAN_EID_VENDOR_SPECIFIC;
++	ie[1] = n - 2;
++	_rtw_memcpy(mlme->vendor_ie[0], ie, n);
++	mlme->vendor_ielen[0] = n;
++	if (pkt == 0)
++		mlme->vendor_ie_mask[0] |= WIFI_BEACON_VENDOR_IE_BIT;
++	else if (pkt == 1)
++		mlme->vendor_ie_mask[0] |= WIFI_PROBERESP_VENDOR_IE_BIT;
++	else if (pkt == 2)
++		mlme->vendor_ie_mask[0] |= WIFI_ASSOCRESP_VENDOR_IE_BIT;
++	RTW_INFO("add_ie: %d bytes, mask 0x%x\n", n, mlme->vendor_ie_mask[0]);
++	update_beacon(adapter, 0xFF, NULL, _TRUE, 0);
++}
++
+ int rtw_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
+ {
+ 	#define PRIVATE_COMMAND_MAX_LEN		65536
+@@ -450,6 +483,14 @@ int rtw_android_priv_cmd(struct net_device *net, struct ifreq *ifr, int cmd)
+ 	RTW_INFO("%s: Android private cmd \"%s\" on %s\n"
+ 		 , __FUNCTION__, command, ifr->ifr_name);
+ 
++	//  Patch in Mobis niro_add_ie function at line 374
++	if (strncmp(command, "add_ie ", 7) == 0) {
++		niro_add_ie(net, command);
++		snprintf(command, 3, "OK");
++		bytes_written = 2;
++		goto response;
++	}
++
+ 	cmd_num = rtw_android_cmdstr_to_num(command);
+ 
+ 	switch (cmd_num) {
+@@ -1081,4 +1122,3 @@ static void wifi_del_dev(void)
+ }
+ #endif /* defined(RTW_ENABLE_WIFI_CONTROL_FUNC) */
+ 
+-

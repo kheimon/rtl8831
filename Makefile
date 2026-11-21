@@ -795,10 +795,14 @@ endif
 
 include $(src)/phl/phl.mk
 
+# Not sure why this is specified twice; typo for 8831/8851 support?
+# Overriding this to bcmdhd anyways.
+# obj-$(CONFIG_RTL8851BU) := $(MODULE_NAME).o
+obj-$(CONFIG_RTL8851BU) := bcmdhd.o
 
-obj-$(CONFIG_RTL8851BU) := $(MODULE_NAME).o
-obj-$(CONFIG_RTL8851BU) := $(MODULE_NAME).o
-$(MODULE_NAME)-y = $(OBJS)
+# 88x1bu makefile loads config from common makefile and other sources, not like 8821au makefile
+#$(MODULE_NAME)-y = $(OBJS)
+bcmdhd-y = $(OBJS)
 
 ############# MEMORY MANAGMENT #############
 ifneq ($(CONFIG_RTKM), n)

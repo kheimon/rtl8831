@@ -25,6 +25,23 @@ MODULE_VERSION(DRIVERVERSION);
 int netdev_open(struct net_device *pnetdev);
 static int netdev_close(struct net_device *pnetdev);
 
+/** Stock Mobis Wi-Fi HAL interface: it passes these to the module and reads the MAC from sysfs
+* 	Same as in 8821au patch .
+*/
+#define NIRO_PATHLEN 256
+static char iface_name[IFNAMSIZ];
+static char firmware_path[NIRO_PATHLEN];
+static char nvram_path[NIRO_PATHLEN];
+static char clm_path[NIRO_PATHLEN];
+static char mac_address_read[100];
+module_param_string(iface_name, iface_name, IFNAMSIZ, 0644);
+module_param_string(firmware_path, firmware_path, NIRO_PATHLEN, 0644);
+module_param_string(nvram_path, nvram_path, NIRO_PATHLEN, 0644);
+module_param_string(clm_path, clm_path, NIRO_PATHLEN, 0644);
+module_param_string(mac_address_read, mac_address_read, 100, 0644);
+
+/* Country code is not set; don't need the changes from the 8821au patch? */
+// char *rtw_country_code = "CA";
 
 /**
  * rtw_net_set_mac_address
@@ -296,7 +313,13 @@ int rtw_ndev_init(struct net_device *dev)
 
 	RTW_PRINT(FUNC_ADPT_FMT" if%d mac_addr="MAC_FMT"\n"
 		, FUNC_ADPT_ARG(adapter), (adapter->iface_id + 1), MAC_ARG(dev->dev_addr));
-	strncpy(adapter->old_ifname, dev->name, IFNAMSIZ);
+	/** change method from strncpy to strlcpy, same as in 8821au patch.
+	 * strncpy() does not guarantee null-termination if the source string is too long, 
+	 * which can lead to buffer overflows and undefined behavior. 
+	 * strlcpy() ensures that the destination buffer is always null-terminated, 
+	 * preventing potential security vulnerabilities and improving code safety.
+	 */
+	strlcpy(adapter->old_ifname, dev->name, IFNAMSIZ);
 	adapter->old_ifname[IFNAMSIZ - 1] = '\0';
 #ifdef CONFIG_ARCH_CORTINA
 	dev->priv_flags = IFF_DOMAIN_WLAN;
@@ -645,6 +668,10 @@ int rtw_os_ndev_register(_adapter *adapter, const char *name)
 	rtw_init_netdev_name(ndev, name);
 
 	dev_addr_mod(ndev, 0, adapter_mac_addr(adapter), ETH_ALEN);
+
+	/* get adapter MAC address if primary, same as in 8821au patch. */
+	if (is_primary_adapter(adapter))
+		snprintf(mac_address_read, sizeof(mac_address_read), "%pM", adapter_mac_addr(adapter));
 
 	/* Tell the network stack we exist */
 
